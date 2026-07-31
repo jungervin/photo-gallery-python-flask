@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 NC_ROOT="${NC_ROOT:-/var/www/nextcloud}"
+HOMELAB_USER="${HOMELAB_USER:-junge}"
 APP_DIR="$NC_ROOT/custom_apps/homelab"
 BASE_URL="https://raw.githubusercontent.com/jungervin/photo-gallery-python-flask/homelab-packages/homelab-packages/v0.7.6"
 EXPECTED_SHA256="b2ed1177bf9ae19e684346bccbcf20248c867488ae0c90dc6bf546aa3c17d2dd"
@@ -68,6 +69,9 @@ runuser -u junge -- env HOME=/home/junge bash -c '
 
 echo "Nextcloud app frissítése..."
 runuser -u www-data -- php "$NC_ROOT/occ" upgrade
+
+echo "A $HOMELAB_USER fotóindexének azonnali frissítése..."
+runuser -u www-data -- php "$NC_ROOT/occ" homelab:photos:index --user="$HOMELAB_USER"
 
 echo "Háttérfeladat egyszeri futtatása..."
 runuser -u www-data -- php -f "$NC_ROOT/cron.php" || true
