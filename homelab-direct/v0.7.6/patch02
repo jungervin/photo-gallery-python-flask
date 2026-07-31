@@ -1,0 +1,78 @@
+     const aggregate: DeletePhotosResponse = {
+-        requested: uniqueIds.length,
++        requested: uniquePhotos.length,
+         deletedCount: 0,
+         failedCount: 0,
+         indexRowsDeleted: 0,
+@@ -143,27 +272,48 @@ export async function deletePhotos(ids: number[]): Promise<DeletePhotosResponse>
+         failed: [],
+     };
+ 
+-    // Egy kép-ID kerül az URL-be, így nincs JSON-tömb paraméterezés és nincs
+-    // kétséges body-dekódolás. Sorosan fut, hogy a Nextcloud fájlzárakat se
+-    // terheljük párhuzamos törlésekkel.
+-    for (const id of uniqueIds) {
++    // Sorosan fut, hogy a Nextcloud fájlzárakat és a lomtárat ne terheljük
++    // párhuzamos törlésekkel.
++    for (const photo of uniquePhotos) {
+         try {
+-            const response = await fetch(apiUrl(`/api/photos/${id}/delete`), {
+-                method: 'POST',
+-                credentials: 'same-origin',
+-                headers: mutationHeaders(),
+-            });
+-            const result = await readJson<DeletePhotosResponse>(response);
++            const davResult = await deletePhotoViaDav(photo, userId);
++            let indexRowsDeleted = 0;
++            let indexCleanupPending = false;
++            const warnings = [...davResult.warnings];
++
++            try {
++                const indexResult = await forgetPhotoIndex(photo.id);
++                indexRowsDeleted = indexResult.indexRowsDeleted;
++                indexCleanupPending = indexResult.indexCleanupPending;
++                warnings.push(...indexResult.warnings);
++            } catch (reason) {
++                indexCleanupPending = true;
++                const message = reason instanceof Error ? reason.message : 'Ismeretlen indexhiba.';
++                warnings.push(`A fájl törlődött, de az index takarítása későbbre maradt: ${message}`);
++            }
+ 
+-            aggregate.deletedCount += result.deletedCount;
+-            aggregate.failedCount += result.failedCount;
+-            aggregate.indexRowsDeleted += result.indexRowsDeleted;
+-            aggregate.deleted.push(...result.deleted);
+-            aggregate.failed.push(...result.failed);
++            aggregate.deletedCount += 1;
++            aggregate.indexRowsDeleted += indexRowsDeleted;
++            aggregate.deleted.push({
++                id: photo.id,
++                fileId: photo.fileId,
++                fileName: photo.fileName,
++                path: photo.path,
++                fileDeleted: davResult.fileDeleted,
++                staleIndexOnly: davResult.staleIndexOnly,
++                indexRowsDeleted,
++                indexCleanupPending,
++                warnings,
++            });
+         } catch (reason) {
+             const message = reason instanceof Error ? reason.message : 'A törlési kérés sikertelen.';
+             aggregate.failedCount += 1;
+-            aggregate.failed.push({ id, message });
++            aggregate.failed.push({
++                id: photo.id,
++                fileName: photo.fileName,
++                path: photo.path,
++                message,
++            });
+         }
+     }
+ 
+ diff --git a/frontend/src/components/AlbumBrowser.tsx b/frontend/src/components/AlbumBrowser.tsx
+index e93d8b3..52e3713 100644
+--- a/frontend/src/components/AlbumBrowser.tsx
++++ b/frontend/src/components/AlbumBrowser.tsx
+@@ -256,7 +256,7 @@ export function AlbumBrowser({ userId, cardSize, onPhotosDeleted }: AlbumBrowser
+ 
+             const targetSignatures = new Set(deleteTargetPhotos.map(duplicateSignature));
