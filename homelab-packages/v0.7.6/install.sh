@@ -20,7 +20,7 @@ if [[ "${EUID}" -ne 0 ]]; then
     exit 1
 fi
 
-for command_name in wget base64 sha256sum unzip runuser php; do
+for command_name in wget base64 sha256sum unzip runuser php tr; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Hiányzó parancs: $command_name"
         exit 1
@@ -39,14 +39,17 @@ for part in "${PARTS[@]}"; do
         -O "$TMP_DIR/$part"
 done
 
-: > "$TMP_DIR/homelab-v0.7.6.zip.b64"
+# A feltöltött darabok önálló base64 blokkok lehetnek. Ezért minden
+# részt külön dekódolunk, és a bináris ZIP-részeket fűzzük össze.
+ZIP_FILE="$TMP_DIR/homelab-v0.7.6.zip"
+: > "$ZIP_FILE"
 for part in "${PARTS[@]}"; do
-    cat "$TMP_DIR/$part" >> "$TMP_DIR/homelab-v0.7.6.zip.b64"
+    tr -d '\r\n\t ' < "$TMP_DIR/$part" \
+        | base64 --decode >> "$ZIP_FILE"
 done
-base64 --decode "$TMP_DIR/homelab-v0.7.6.zip.b64" > "$TMP_DIR/homelab-v0.7.6.zip"
 
-echo "$EXPECTED_SHA256  $TMP_DIR/homelab-v0.7.6.zip" | sha256sum --check --strict
-unzip -tq "$TMP_DIR/homelab-v0.7.6.zip" >/dev/null
+echo "$EXPECTED_SHA256  $ZIP_FILE" | sha256sum --check --strict
+unzip -tq "$ZIP_FILE" >/dev/null
 
 echo "Biztonsági mentés: $BACKUP_DIR"
 if [[ -d "$APP_DIR" ]]; then
@@ -54,7 +57,7 @@ if [[ -d "$APP_DIR" ]]; then
 fi
 
 echo "Fájlok telepítése..."
-unzip -oq "$TMP_DIR/homelab-v0.7.6.zip" -d "$NC_ROOT"
+unzip -oq "$ZIP_FILE" -d "$NC_ROOT"
 chown -R junge:www-data "$APP_DIR"
 
 echo "React frontend fordítása..."
