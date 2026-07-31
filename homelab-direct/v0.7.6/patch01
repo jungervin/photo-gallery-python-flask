@@ -1,0 +1,98 @@
++    const delays = [0, 250, 750];
++    let lastKnown: boolean | null = null;
++
++    for (const delay of delays) {
++        if (delay > 0) {
++            await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
++        }
++
++        try {
++            const response = await fetch(url, {
++                method: 'PROPFIND',
++                credentials: 'same-origin',
++                headers: davHeaders({ Depth: '0', 'Content-Type': 'application/xml; charset=utf-8' }),
++                body,
++            });
++
++            if (response.status === 404) return false;
++            if (response.ok || response.status === 207) lastKnown = true;
++        } catch {
++            // A következő próbálkozás még adhat biztos választ.
++        }
++    }
++
++    return lastKnown;
++}
++
+ async function readJson<T>(response: Response): Promise<T> {
+     if (!response.ok) {
+         let message = `A szerver ${response.status} hibát adott.`;
+@@ -132,10 +200,71 @@ function mutationHeaders(): HeadersInit {
+     };
+ }
+ 
+-export async function deletePhotos(ids: number[]): Promise<DeletePhotosResponse> {
+-    const uniqueIds = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))].slice(0, 5000);
++interface ForgetIndexResponse {
++    id: number;
++    fileId?: number | null;
++    fileName?: string;
++    path?: string;
++    alreadyMissing: boolean;
++    indexRowsDeleted: number;
++    indexCleanupPending: boolean;
++    warnings: string[];
++}
++
++async function forgetPhotoIndex(id: number): Promise<ForgetIndexResponse> {
++    const response = await fetch(apiUrl(`/api/photos/${id}/forget`), {
++        method: 'POST',
++        credentials: 'same-origin',
++        headers: mutationHeaders(),
++    });
++
++    return readJson<ForgetIndexResponse>(response);
++}
++
++async function deletePhotoViaDav(
++    photo: Photo,
++    userId: string,
++): Promise<{ fileDeleted: boolean; staleIndexOnly: boolean; warnings: string[] }> {
++    const target = davFileUrl(userId, photo.path);
++    const response = await fetch(target, {
++        method: 'DELETE',
++        credentials: 'same-origin',
++        headers: davHeaders(),
++    });
++
++    if (response.ok) {
++        return { fileDeleted: true, staleIndexOnly: false, warnings: [] };
++    }
++
++    // A Nextcloudnál előfordulhat, hogy a fájl már a lomtárba került,
++    // de egy utófeldolgozó miatt a DAV válasz mégis 500. Ilyenkor a
++    // tényleges állapotot ellenőrizzük, nem a hibakódot hisszük el vakon.
++    const exists = await davFileExists(target);
++    if (exists === false) {
++        const warning = response.status === 404
++            ? 'A fájl már nem volt az eredeti helyén; az árva indexet eltávolítottam.'
++            : `A fájl törlődött, de a Nextcloud DAV HTTP ${response.status} hibát jelzett az utófeldolgozásban.`;
++        return {
++            fileDeleted: response.status !== 404,
++            staleIndexOnly: response.status === 404,
++            warnings: [warning],
++        };
++    }
++
++    const detail = await responseDetail(response);
++    const suffix = detail ? ` ${detail}` : '';
++    throw new Error(`A Nextcloud-fájl törlése sikertelen (HTTP ${response.status}).${suffix}`);
++}
++
++export async function deletePhotos(photos: Photo[], userId: string): Promise<DeletePhotosResponse> {
++    const uniquePhotos = [...new Map(
++        photos
++            .filter((photo) => Number.isInteger(photo.id) && photo.id > 0)
++            .map((photo) => [photo.id, photo]),
++    ).values()].slice(0, 5000);
++
