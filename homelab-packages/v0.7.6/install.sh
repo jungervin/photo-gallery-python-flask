@@ -38,7 +38,11 @@ for part in "${PARTS[@]}"; do
         -O "$TMP_DIR/$part"
 done
 
-cat "${PARTS[@]/#/$TMP_DIR/}" | base64 --decode > "$TMP_DIR/homelab-v0.7.6.zip"
+: > "$TMP_DIR/homelab-v0.7.6.zip.b64"
+for part in "${PARTS[@]}"; do
+    cat "$TMP_DIR/$part" >> "$TMP_DIR/homelab-v0.7.6.zip.b64"
+done
+base64 --decode "$TMP_DIR/homelab-v0.7.6.zip.b64" > "$TMP_DIR/homelab-v0.7.6.zip"
 
 echo "$EXPECTED_SHA256  $TMP_DIR/homelab-v0.7.6.zip" | sha256sum --check --strict
 unzip -tq "$TMP_DIR/homelab-v0.7.6.zip" >/dev/null
