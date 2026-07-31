@@ -1,0 +1,43 @@
++                // változatlan marad, a Nextcloud file ID viszont új lehet.
++                // Ilyenkor nem szabad vakon kihagyni a rekordot, különben a
++                // preview a már törölt file ID-ra mutatna.
++                $identityChanged = $fileId !== null
++                    && $photo->getFileId() !== $fileId;
++
++                if (!$identityChanged) {
++                    return [
++                        'status' => 'skipped',
++                        'photo' => $photo,
++                    ];
++                }
++
++                $photo->setFileId($fileId);
++                $photo->setFileName(basename($relativePath));
++                $photo->setExtension($extension);
++                $photo->setFileSize((int)$fileSize);
++                $photo->setFileMtime((int)$fileMtime);
++                $photo->setIndexedAt(time());
++
+                 return [
+-                    'status' => 'skipped',
+-                    'photo' => $photo,
++                    'status' => 'updated',
++                    'photo' => $this->photoMapper->update($photo),
+                 ];
+             }
+         } catch (DoesNotExistException) {
+diff --git a/templates/index.php b/templates/index.php
+index ad338b6..ba1fe57 100644
+--- a/templates/index.php
++++ b/templates/index.php
+@@ -2,8 +2,8 @@
+ 
+ declare(strict_types=1);
+ 
+-style('homelab', 'homelab-photos-v075');
+-script('homelab', 'homelab-photos-v075');
++style('homelab', 'homelab-photos-v076');
++script('homelab', 'homelab-photos-v076');
+ ?>
+ 
+ <div
