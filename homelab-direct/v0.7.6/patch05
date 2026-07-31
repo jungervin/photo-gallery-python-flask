@@ -1,0 +1,107 @@
++        private readonly PhotoIndexStatusService $statusService,
++        private readonly LoggerInterface $logger,
++    ) {
++    }
++
++    public function handle(Event $event): void
++    {
++        try {
++            $node = $this->extractNode($event);
++
++            if ($node === null) {
++                return;
++            }
++
++            $path = str_replace('\\', '/', $node->getPath());
++            $parsed = $this->parseUserFilePath($path);
++
++            if ($parsed === null || !$this->isSupportedPhoto($parsed['relativePath'])) {
++                return;
++            }
++
++            $argument = [
++                'userId' => $parsed['userId'],
++                'force' => false,
++            ];
++
++            if (!$this->jobList->has(IndexUserPhotosJob::class, $argument)) {
++                $this->jobList->add(IndexUserPhotosJob::class, $argument);
++            }
++
++            $status = $this->statusService->getStatus($parsed['userId']);
++            if (($status['state'] ?? 'idle') !== 'running') {
++                $this->statusService->markQueued($parsed['userId']);
++            }
++        } catch (\Throwable $exception) {
++            // Fájlrendszer-eseményből tilos hibát továbbdobni: különben a
++            // Nextcloud már végrehajtott művelete 500-as válasszal zárulhat.
++            $this->logger->warning('HomeLab: a fájlesemény utáni indexelés nem állítható sorba.', [
++                'app' => 'homelab',
++                'event' => $event::class,
++                'exception' => $exception,
++            ]);
++        }
++    }
++
++    private function extractNode(Event $event): ?Node
++    {
++        if (method_exists($event, 'getTarget')) {
++            $target = $event->getTarget();
++            if ($target instanceof Node) {
++                return $target;
++            }
++        }
++
++        if (method_exists($event, 'getNode')) {
++            $node = $event->getNode();
++            if ($node instanceof Node) {
++                return $node;
++            }
++        }
++
++        return null;
++    }
++
++    /**
++     * @return array{userId:string,relativePath:string}|null
++     */
++    private function parseUserFilePath(string $path): ?array
++    {
++        if (preg_match('#^/([^/]+)/files/(.+)$#', $path, $matches) !== 1) {
++            return null;
++        }
++
++        $userId = rawurldecode($matches[1]);
++        $relativePath = ltrim(rawurldecode($matches[2]), '/');
++
++        if ($userId === '' || $relativePath === '') {
++            return null;
++        }
++
++        return [
++            'userId' => $userId,
++            'relativePath' => $relativePath,
++        ];
++    }
++
++    private function isSupportedPhoto(string $path): bool
++    {
++        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
++        return $extension !== ''
++            && in_array($extension, $this->photoIndexService->getSupportedExtensions(), true);
++    }
++}
+diff --git a/lib/Service/PhotoIndexService.php b/lib/Service/PhotoIndexService.php
+index d81ab76..b480fbe 100644
+--- a/lib/Service/PhotoIndexService.php
++++ b/lib/Service/PhotoIndexService.php
+@@ -87,13 +87,31 @@ class PhotoIndexService
+                 $relativePath
+             );
+ 
+-            if (
+-                !$force
+-                && $photo->getMetadataHash() === $metadataHash
+-            ) {
++            if (!$force && $photo->getMetadataHash() === $metadataHash) {
++                // Lomtárból visszaállításkor a tartalom, méret és mtime gyakran
