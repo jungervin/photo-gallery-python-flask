@@ -1,0 +1,106 @@
+diff --git a/appinfo/info.xml b/appinfo/info.xml
+index 8f79894..a9564e4 100644
+--- a/appinfo/info.xml
++++ b/appinfo/info.xml
+@@ -13,7 +13,7 @@
+         szerverállapotok és automatizálások kezelésére.
+     </description>
+ 
+-    <version>0.7.5</version>
++    <version>0.7.6</version>
+ 
+     <licence>agpl</licence>
+ 
+diff --git a/appinfo/routes.php b/appinfo/routes.php
+index 6e8a818..d794884 100644
+--- a/appinfo/routes.php
++++ b/appinfo/routes.php
+@@ -20,6 +20,12 @@ return [
+             'verb' => 'POST',
+             'requirements' => ['id' => '\\d+'],
+         ],
++        [
++            'name' => 'photo#forget_one',
++            'url' => '/api/photos/{id}/forget',
++            'verb' => 'POST',
++            'requirements' => ['id' => '\\d+'],
++        ],
+         [
+             'name' => 'photo#delete_selected',
+             'url' => '/api/photos/delete-selected',
+diff --git a/frontend/package.json b/frontend/package.json
+index 01e671f..58515fc 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "homelab-nextcloud-photos-frontend",
+   "private": true,
+-  "version": "0.7.5",
++  "version": "0.7.6",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index c7f8770..64aab13 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -314,7 +314,7 @@ export function App({ userId }: AppProps) {
+ 
+             const targetSignatures = new Set(deleteTargetPhotos.map(duplicateSignature));
+             const requestedIds = new Set(deleteTargetIds);
+-            const result = await deletePhotos(deleteTargetIds);
++            const result = await deletePhotos(deleteTargetPhotos, userId);
+ 
+             const deletedIds = new Set(result.deleted.map((item) => item.id));
+             const deletedFileIdsForMatch = new Set(
+diff --git a/frontend/src/api/photosApi.ts b/frontend/src/api/photosApi.ts
+index db4457b..9982a78 100644
+--- a/frontend/src/api/photosApi.ts
++++ b/frontend/src/api/photosApi.ts
+@@ -4,6 +4,74 @@ function apiUrl(path: string): string {
+     return OC.generateUrl(`/apps/homelab${path}`);
+ }
+ 
++function rootPath(): string {
++    const value = typeof OC.getRootPath === 'function'
++        ? OC.getRootPath()
++        : (OC.webroot ?? '');
++    return value.replace(/\/$/, '');
++}
++
++function encodeFilePath(path: string): string {
++    return path
++        .replaceAll('\\', '/')
++        .split('/')
++        .filter(Boolean)
++        .map((segment) => encodeURIComponent(segment))
++        .join('/');
++}
++
++function davFileUrl(userId: string, path: string): string {
++    return `${rootPath()}/remote.php/dav/files/${encodeURIComponent(userId)}/${encodeFilePath(path)}`;
++}
++
++function davHeaders(extra: HeadersInit = {}): Headers {
++    const headers = new Headers(extra);
++    headers.set('Accept', 'application/xml, text/xml, */*');
++    if (OC.requestToken) headers.set('requesttoken', OC.requestToken);
++    return headers;
++}
++
++async function responseDetail(response: Response): Promise<string> {
++    try {
++        const text = (await response.text())
++            .replace(/<[^>]+>/g, ' ')
++            .replace(/\s+/g, ' ')
++            .trim();
++        return text.slice(0, 300);
++    } catch {
++        return '';
++    }
++}
++
++async function davFileExists(url: string): Promise<boolean | null> {
++    const body = `<?xml version="1.0"?>
++<d:propfind xmlns:d="DAV:"><d:prop><d:getetag /></d:prop></d:propfind>`;
