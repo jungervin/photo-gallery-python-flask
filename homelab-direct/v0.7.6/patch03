@@ -1,0 +1,90 @@
+             const requestedIds = new Set(deleteTargetIds);
+-            const result = await deletePhotos(deleteTargetIds);
++            const result = await deletePhotos(deleteTargetPhotos, userId);
+             const deletedIds = new Set(result.deleted.map((item) => item.id));
+             const deletedFileIds = new Set(
+                 result.deleted.map((item) => item.fileId).filter((id): id is number => id !== null),
+diff --git a/frontend/vite.config.ts b/frontend/vite.config.ts
+index 8497ce2..61a3704 100644
+--- a/frontend/vite.config.ts
++++ b/frontend/vite.config.ts
+@@ -15,8 +15,8 @@ export default defineConfig({
+             entry: 'src/main.tsx',
+             name: 'HomeLabPhotos',
+             formats: ['iife'],
+-            fileName: () => 'js/homelab-photos-v075.js',
+-            cssFileName: 'css/homelab-photos-v075',
++            fileName: () => 'js/homelab-photos-v076.js',
++            cssFileName: 'css/homelab-photos-v076',
+         },
+         rollupOptions: {
+             output: {
+diff --git a/lib/AppInfo/Application.php b/lib/AppInfo/Application.php
+index 8e2b8b4..65a8828 100644
+--- a/lib/AppInfo/Application.php
++++ b/lib/AppInfo/Application.php
+@@ -4,10 +4,15 @@ declare(strict_types=1);
+ 
+ namespace OCA\HomeLab\AppInfo;
+ 
++use OCA\HomeLab\Listener\PhotoFileChangedListener;
+ use OCP\AppFramework\App;
+ use OCP\AppFramework\Bootstrap\IBootContext;
+ use OCP\AppFramework\Bootstrap\IBootstrap;
+ use OCP\AppFramework\Bootstrap\IRegistrationContext;
++use OCP\Files\Events\Node\NodeCreatedEvent;
++use OCP\Files\Events\Node\NodeDeletedEvent;
++use OCP\Files\Events\Node\NodeRenamedEvent;
++use OCP\Files\Events\Node\NodeWrittenEvent;
+ 
+ class Application extends App implements IBootstrap
+ {
+@@ -20,9 +25,13 @@ class Application extends App implements IBootstrap
+ 
+     public function register(IRegistrationContext $context): void
+     {
++        $context->registerEventListener(NodeCreatedEvent::class, PhotoFileChangedListener::class);
++        $context->registerEventListener(NodeWrittenEvent::class, PhotoFileChangedListener::class);
++        $context->registerEventListener(NodeDeletedEvent::class, PhotoFileChangedListener::class);
++        $context->registerEventListener(NodeRenamedEvent::class, PhotoFileChangedListener::class);
+     }
+ 
+     public function boot(IBootContext $context): void
+     {
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/Controller/PhotoController.php b/lib/Controller/PhotoController.php
+index 7a3cbf5..f5712be 100644
+--- a/lib/Controller/PhotoController.php
++++ b/lib/Controller/PhotoController.php
+@@ -114,8 +114,91 @@ class PhotoController extends Controller
+     }
+ 
+     #[NoAdminRequired]
+-    public function deleteOne(int $id): JSONResponse
++    public function forgetOne(string $id): JSONResponse
+     {
++        $photoId = (int)$id;
++        $user = $this->userSession->getUser();
++
++        if ($user === null) {
++            return new JSONResponse(
++                ['error' => 'Nincs bejelentkezett felhasználó.'],
++                Response::STATUS_UNAUTHORIZED
++            );
++        }
++
++        if ($photoId <= 0) {
++            return new JSONResponse(
++                ['error' => 'Érvénytelen képazonosító.'],
++                Response::STATUS_BAD_REQUEST
++            );
++        }
++
++        $userId = $user->getUID();
++
++        try {
++            $photo = $this->photoMapper->findForUserById($userId, $photoId);
++        } catch (\Throwable) {
