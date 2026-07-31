@@ -1,0 +1,95 @@
++            // Idempotens művelet: ha az indexrekord már eltűnt, késznek tekintjük.
++            return new JSONResponse([
++                'id' => $photoId,
++                'alreadyMissing' => true,
++                'indexRowsDeleted' => 0,
++                'indexCleanupPending' => false,
++                'warnings' => [],
++            ], Response::STATUS_OK);
++        }
++
++        $path = ltrim(str_replace('\\', '/', $photo->getPath()), '/');
++        $fileId = $photo->getFileId();
++        $removedRows = 0;
++        $pending = false;
++        $warnings = [];
++
++        try {
++            $removedRows += $this->photoMapper->deleteIdsForUser($userId, [$photoId]);
++        } catch (\Throwable $exception) {
++            $pending = true;
++            $warnings[] = 'A konkrét indexrekord törlése nem sikerült; a teljes indexelés eltávolítja.';
++            $this->logger->error('HomeLab: indexrekord elfelejtése sikertelen.', [
++                'app' => 'homelab',
++                'userId' => $userId,
++                'photoId' => $photoId,
++                'path' => $path,
++                'exception' => $exception,
++            ]);
++        }
++
++        try {
++            $removedRows += $this->photoMapper->deleteForUserByIdentity($userId, $path, $fileId);
++        } catch (\Throwable $exception) {
++            $pending = true;
++            $warnings[] = 'A kapcsolódó indexrekordok takarítása nem sikerült; a teljes indexelés befejezi.';
++            $this->logger->error('HomeLab: kapcsolódó indexrekordok elfelejtése sikertelen.', [
++                'app' => 'homelab',
++                'userId' => $userId,
++                'photoId' => $photoId,
++                'fileId' => $fileId,
++                'path' => $path,
++                'exception' => $exception,
++            ]);
++        }
++
++        return new JSONResponse([
++            'id' => $photoId,
++            'fileId' => $fileId,
++            'fileName' => $photo->getFileName(),
++            'path' => $path,
++            'alreadyMissing' => false,
++            'indexRowsDeleted' => $removedRows,
++            'indexCleanupPending' => $pending,
++            'warnings' => $warnings,
++        ], Response::STATUS_OK);
++    }
++
++    #[NoAdminRequired]
++    public function deleteOne(string $id): JSONResponse
++    {
++        $id = (int)$id;
+         $user = $this->userSession->getUser();
+ 
+         if ($user === null) {
+diff --git a/patchB/lib/Listener/PhotoFileChangedListener.php b/lib/Listener/PhotoFileChangedListener.php
+new file mode 100644
+index 0000000..67de095
+--- /dev/null
++++ b/lib/Listener/PhotoFileChangedListener.php
+@@ -0,0 +1,118 @@
++<?php
++
++declare(strict_types=1);
++
++namespace OCA\HomeLab\Listener;
++
++use OCA\HomeLab\BackgroundJob\IndexUserPhotosJob;
++use OCA\HomeLab\Service\PhotoIndexService;
++use OCA\HomeLab\Service\PhotoIndexStatusService;
++use OCP\BackgroundJob\IJobList;
++use OCP\EventDispatcher\Event;
++use OCP\EventDispatcher\IEventListener;
++use OCP\Files\Node;
++use Psr\Log\LoggerInterface;
++
++/**
++ * A Nextcloud fájleseményeire reagálva sorba állít egy felhasználói
++ * fotóindex-frissítést. A listener soha nem dob tovább kivételt, ezért
++ * nem tudja elrontani a fájl törlését, visszaállítását vagy feltöltését.
++ */
++class PhotoFileChangedListener implements IEventListener
++{
++    public function __construct(
++        private readonly IJobList $jobList,
++        private readonly PhotoIndexService $photoIndexService,
